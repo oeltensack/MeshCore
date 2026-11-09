@@ -36,6 +36,7 @@
 #include <helpers/RegionMap.h>
 #include <helpers/RoutingPolicy.h>
 #include "RateLimiter.h"
+#include "ACFork.h"
 
 #ifdef WITH_BRIDGE
 extern AbstractBridge* bridge;
@@ -71,7 +72,7 @@ struct NeighbourInfo {
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.18.0"
+  #define FIRMWARE_VERSION   "v1.18.0-ac"
 #endif
 
 #define FIRMWARE_ROLE "repeater"
@@ -110,6 +111,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint8_t pending_sf;
   uint8_t pending_cr;
   int  matching_peer_indexes[MAX_CLIENTS];
+  ACFork _ac;   // anti-collision fork options
 #if defined(WITH_RS232_BRIDGE)
   RS232Bridge bridge;
 #elif defined(WITH_ESPNOW_BRIDGE)

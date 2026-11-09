@@ -455,6 +455,10 @@ bool MyMesh::allowPacketForward(const mesh::Packet *packet) {
       return false;
     }
   }
+  if (packet->isRouteFlood() && packet->getPayloadType() == PAYLOAD_TYPE_ADVERT
+      && !_ac.allowAdvert(packet, _ms->getMillis())) {
+    return false;   // ac: advert.throttle
+  }
   return true;
 }
 
@@ -477,6 +481,23 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 }
 
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
+  if (pkt->isRouteFlood()) {   // ac: dup.suppress - cancel own queued copy once enough others were heard
+    uint8_t h[MAX_HASH_SIZE];
+    if (_ac.onFloodHeard(pkt, h)) {
+      uint8_t qh[MAX_HASH_SIZE];
+      for (int i = 0; i < _mgr->getOutboundTotal(); i++) {
+        mesh::Packet* q = _mgr->getOutboundByIdx(i);
+        if (q == NULL || !q->isRouteFlood()) continue;
+        q->calculatePacketHash(qh);
+        if (memcmp(qh, h, MAX_HASH_SIZE) == 0) {
+          releasePacket(_mgr->removeOutboundByIdx(i));
+          _ac.stats.dup_cancelled++;
+          break;
+        }
+      }
+    }
+  }
+
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 1) {
     bridge.sendPacket(pkt);
@@ -546,6 +567,14 @@ int MyMesh::calcRxDelay(float score, uint32_t air_time) const {
 
 uint32_t MyMesh::getRetransmitDelay(const mesh::Packet *packet) {
   uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * _prefs.tx_delay_factor);
+  bool forwarded_flood = packet->isRouteFlood() && packet->getPathHashCount() > 0;
+  if (forwarded_flood) {
+    _ac.notePendingFlood(packet);   // ac: remember for dup.suppress
+  }
+  if (forwarded_flood && _ac.prefs.txdelay_snr) {
+    uint32_t window = 5*t;
+    return _ac.snrDelay(packet->getSNR(), window, getRNG()->nextInt(0, window/4 + 1));
+  }
   return getRNG()->nextInt(0, 5*t + 1);
 }
 uint32_t MyMesh::getDirectRetransmitDelay(const mesh::Packet *packet) {
@@ -947,6 +976,7 @@ void MyMesh::begin(FILESYSTEM *fs) {
   _fs = fs;
   // load persisted prefs
   _cli.loadPrefs(_fs);
+  _ac.load(_fs);   // ac fork options (separate file)
   acl.load(_fs, self_id);
   // TODO: key_store.begin();
   region_map.load(_fs);
@@ -1193,6 +1223,7 @@ void MyMesh::clearStats() {
   radio_driver.resetStats();
   resetStats();
   ((SimpleMeshTables *)getTables())->resetStats();
+  _ac.resetStats();
 }
 
 void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply) {
@@ -1281,8 +1312,15 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       sendNodeDiscoverReq();
       strcpy(reply, "OK - Discover sent");
     }
-  } else{
-    _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
+  } else {
+    bool ac_dirty = false;
+    if (_ac.handleCommand(command, reply, ac_dirty)) {   // ac fork commands
+      if (ac_dirty && !_ac.save(_fs)) {
+        strcpy(reply, "Err - could not save fork prefs");
+      }
+    } else {
+      _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
+    }
   }
 }
 

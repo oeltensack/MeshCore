@@ -1,0 +1,30 @@
+name: Build AC Repeater (RAK4631)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ac-fork]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build
+        run: pio run -e RAK_4631_repeater
+      - name: Create UF2
+        run: |
+          python3 bin/uf2conv/uf2conv.py .pio/build/RAK_4631_repeater/firmware.hex -c \
+            -o .pio/build/RAK_4631_repeater/firmware.uf2 -f 0xADA52840
+          mkdir -p out
+          cp .pio/build/RAK_4631_repeater/firmware.uf2 out/RAK_4631_repeater-ac.uf2
+          cp .pio/build/RAK_4631_repeater/firmware.zip out/RAK_4631_repeater-ac.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RAK_4631_repeater-ac
+          path: out/
