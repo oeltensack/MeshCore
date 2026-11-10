@@ -70,6 +70,19 @@ void setup() {
   FILESYSTEM* fs;
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   InternalFS.begin();
+#ifdef FORMAT_FS_ON_BOOT
+  // Werksreset-Firmware: Speicher loeschen, dann stehenbleiben. Danach normale Firmware flashen.
+  Serial.begin(115200);
+  delay(2000);
+  Serial.println("Werksreset: loesche Dateisystem ...");
+  bool ok = InternalFS.format();
+  Serial.println(ok ? "Werksreset: OK - jetzt normale Firmware flashen" : "Werksreset: FEHLER");
+  pinMode(LED_BUILTIN, OUTPUT);
+  while (true) {   // LED: schnell = OK, langsam = Fehler
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+    delay(ok ? 150 : 1000);
+  }
+#endif
   fs = &InternalFS;
   IdentityStore store(InternalFS, "");
 #elif defined(ESP32)
