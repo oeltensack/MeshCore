@@ -36,7 +36,7 @@ static unsigned long userBtnDownAt = 0;
 #endif
 
 #ifdef FORMAT_FS_ON_BOOT
-#include <flash/flash_nrf5x.h>
+#include <nrf_sdm.h>
 #endif
 
 void setup() {
@@ -57,14 +57,37 @@ void setup() {
   #endif
       delay(400);
     }
-    Serial.println("Werksreset: loesche Dateisystem ...");
-    bool ok = true;
-    for (uint32_t addr = 0xED000; addr < 0xED000 + 7 * 4096; addr += 4096) {
-      if (!flash_nrf5x_erase(addr)) ok = false;
+    // Diagnose: ist die SoftDevice schon aktiv? Dann warten Flash-Befehle ewig auf ein SoC-Event.
+    uint8_t sd_en = 0;
+    sd_softdevice_is_enabled(&sd_en);
+    Serial.println(sd_en ? "Werksreset: SoftDevice war AKTIV -> wird abgeschaltet" : "Werksreset: SoftDevice aus");
+    if (sd_en) sd_softdevice_disable();
+    for (int i = 0; i < (sd_en ? 2 : 1); i++) {   // Blinkcode: 1x = SD aus, 2x = SD war aktiv
+      digitalWrite(LED_BUILTIN, LOW);
+  #ifdef LED_WHITE
+      digitalWrite(LED_WHITE, LOW);
+  #endif
+      delay(700);
+      digitalWrite(LED_BUILTIN, HIGH);
+  #ifdef LED_WHITE
+      digitalWrite(LED_WHITE, HIGH);
+  #endif
+      delay(700);
     }
-    flash_nrf5x_flush();
-    InternalFS.begin();                     // findet leeren Bereich, formatiert neu
-    if (!InternalFS.format()) ok = false;
+    Serial.println("Werksreset: loesche Dateisystem (NVMC direkt) ...");
+    bool ok = true;
+    // direkt ueber die NVMC-Register, ohne Treiber/Semaphoren
+    for (uint32_t addr = 0xED000; addr < 0xED000 + 7 * 4096; addr += 4096) {
+      NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een << NVMC_CONFIG_WEN_Pos;
+      while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
+      NRF_NVMC->ERASEPAGE = addr;
+      while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
+      NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
+      while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
+      if (*(volatile uint32_t*)addr != 0xFFFFFFFF) ok = false;   // Seite wirklich leer?
+      Serial.printf("  Seite 0x%05lX %s\n", (unsigned long)addr, (*(volatile uint32_t*)addr == 0xFFFFFFFF) ? "leer" : "NICHT geloescht");
+    }
+    // Neu formatiert wird beim naechsten Start der normalen Firmware automatisch.
     Serial.println(ok ? "Werksreset: OK - jetzt normale Firmware flashen" : "Werksreset: FEHLER");
     bool led = false;
     while (true) {   // schnell = OK, langsam = Fehler
