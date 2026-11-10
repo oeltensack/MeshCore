@@ -43,6 +43,40 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
+#ifdef FORMAT_FS_ON_BOOT
+  // Werksreset-Firmware: als ALLERERSTES (vor Board/Funk/Spannungspruefung), dann stehenbleiben.
+  {
+  #ifdef LED_WHITE
+    pinMode(LED_WHITE, OUTPUT);
+  #endif
+    pinMode(LED_BUILTIN, OUTPUT);
+    for (int i = 0; i < 6; i++) {   // Lebenszeichen: 3x langsam = Firmware laeuft
+      digitalWrite(LED_BUILTIN, i & 1);
+  #ifdef LED_WHITE
+      digitalWrite(LED_WHITE, i & 1);
+  #endif
+      delay(400);
+    }
+    Serial.println("Werksreset: loesche Dateisystem ...");
+    bool ok = true;
+    for (uint32_t addr = 0xED000; addr < 0xED000 + 7 * 4096; addr += 4096) {
+      if (!flash_nrf5x_erase(addr)) ok = false;
+    }
+    flash_nrf5x_flush();
+    InternalFS.begin();                     // findet leeren Bereich, formatiert neu
+    if (!InternalFS.format()) ok = false;
+    Serial.println(ok ? "Werksreset: OK - jetzt normale Firmware flashen" : "Werksreset: FEHLER");
+    while (true) {   // schnell = OK, langsam = Fehler
+      digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+  #ifdef LED_WHITE
+      digitalWrite(LED_WHITE, digitalRead(LED_BUILTIN));
+  #endif
+      delay(ok ? 150 : 1000);
+      if (Serial) Serial.println(ok ? "Werksreset: OK" : "Werksreset: FEHLER");
+    }
+  }
+#endif
+
   board.begin();
 
 #ifdef HAS_EXTERNAL_WATCHDOG
@@ -74,26 +108,6 @@ void setup() {
   FILESYSTEM* fs;
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   InternalFS.begin();
-#ifdef FORMAT_FS_ON_BOOT
-  // Werksreset-Firmware: Speicher loeschen, dann stehenbleiben. Danach normale Firmware flashen.
-  Serial.begin(115200);
-  delay(2000);
-  Serial.println("Werksreset: loesche Dateisystem ...");
-  // 1. Flash-Bereich des Dateisystems Seite fuer Seite roh loeschen (unabhaengig vom Dateiformat)
-  bool ok = true;
-  for (uint32_t addr = 0xED000; addr < 0xED000 + 7 * 4096; addr += 4096) {
-    if (!flash_nrf5x_erase(addr)) ok = false;
-  }
-  flash_nrf5x_flush();
-  // 2. frisch formatieren
-  if (!InternalFS.format()) ok = false;
-  Serial.println(ok ? "Werksreset: OK - jetzt normale Firmware flashen" : "Werksreset: FEHLER");
-  pinMode(LED_BUILTIN, OUTPUT);
-  while (true) {   // LED: schnell = OK, langsam = Fehler
-    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
-    delay(ok ? 150 : 1000);
-  }
-#endif
   fs = &InternalFS;
   IdentityStore store(InternalFS, "");
 #elif defined(ESP32)
