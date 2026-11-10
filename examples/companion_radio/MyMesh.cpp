@@ -933,6 +933,12 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
 #endif
   //_prefs.rx_delay_base = 10.0f;  enable once new algo fixed
   _prefs.setRepeatEn(false);
+#ifdef DEFAULT_CAD_ENABLED
+  _prefs.cad_enabled = DEFAULT_CAD_ENABLED;   // Listen-before-Talk als Werkseinstellung
+#endif
+#ifdef DEFAULT_MULTI_ACKS
+  _prefs.multi_acks = DEFAULT_MULTI_ACKS;
+#endif
 #if defined(USE_SX1262) || defined(USE_SX1268)
 #ifdef SX126X_RX_BOOSTED_GAIN
   _prefs.rx_boosted_gain = SX126X_RX_BOOSTED_GAIN;
