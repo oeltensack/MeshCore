@@ -26,6 +26,16 @@ static void disconnect_callback(uint16_t conn_handle, uint8_t reason) {
 void NRF52Board::begin() {
   startup_reason = BD_STARTUP_NORMAL;
 
+  // Schutz: Ist die SoftDevice beim Start schon aktiv (z. B. vom Bootloader uebrig), aber
+  // Bluefruit laeuft noch nicht, warten alle Flash-Schreib-/Loeschbefehle ewig auf ein
+  // SoC-Event, das niemand verteilt -> Einstellungen speichern friert ein. Daher abschalten;
+  // Bluefruit.begin() (OTA, BLE) schaltet sie bei Bedarf sauber wieder ein.
+  {
+    uint8_t sd_en = 0;
+    sd_softdevice_is_enabled(&sd_en);
+    if (sd_en) sd_softdevice_disable();
+  }
+
   #ifdef USE_CC310_HW_CRYPTO
     // CC310 TRNG is higher quality and environment-independent vs radio RSSI noise.
     nRFCrypto.begin();
