@@ -35,4 +35,9 @@ public:
   const char* getManufacturerName() const override {
     return "RAK 4631";
   }
+
+#ifdef NRF52_POWER_MANAGEMENT
+  // Unterspannung im Betrieb: SYSTEMOFF mit LPCOMP-Wake (Solar laedt nach -> Neustart)
+  void shutdownLowVoltage() { initiateShutdown(SHUTDOWN_REASON_LOW_VOLTAGE); }
+#endif
 };

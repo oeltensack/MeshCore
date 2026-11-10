@@ -28,6 +28,9 @@
 #include <helpers/ArduinoHelpers.h>
 #include <helpers/ClientACL.h>
 #include <helpers/CommonCLI.h>
+#ifdef SMART_REPEAT
+#include "SmartRepeat.h"
+#endif
 #include <helpers/IdentityStore.h>
 #include <helpers/SimpleMeshTables.h>
 #include <helpers/StaticPoolPacketManager.h>
@@ -258,4 +261,12 @@ public:
   virtual bool configSideDetectors(const uint8_t sideDetSFs[], uint8_t num, float bw) override;
   #endif
 
+
+#ifdef SMART_REPEAT
+private:
+  SmartRepeat _smart;
+  void smartCheckEcho(const mesh::Packet* pkt);
+  void smartLoop();
+  bool smartHandleCommand(const char* command, char* reply);
+#endif
 };

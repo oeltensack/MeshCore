@@ -477,6 +477,9 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 }
 
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
+#ifdef SMART_REPEAT
+  smartCheckEcho(pkt);   // vor der Verarbeitung: hat ein Nachbar unser wartendes Paket schon weitergegeben?
+#endif
 #ifdef WITH_BRIDGE
   if (_prefs.bridge_pkt_src == 1) {
     bridge.sendPacket(pkt);
@@ -546,6 +549,12 @@ int MyMesh::calcRxDelay(float score, uint32_t air_time) const {
 
 uint32_t MyMesh::getRetransmitDelay(const mesh::Packet *packet) {
   uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * _prefs.tx_delay_factor);
+#ifdef SMART_REPEAT
+  if (_smart.enabled && packet->isRouteFlood()) {
+    float rnd = getRNG()->nextInt(0, 10001) / 10000.0f;
+    return _smart.calcDelay(packet->getSNR(), _prefs.sf, 5*t, rnd);
+  }
+#endif
   return getRNG()->nextInt(0, 5*t + 1);
 }
 uint32_t MyMesh::getDirectRetransmitDelay(const mesh::Packet *packet) {
@@ -908,6 +917,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _prefs.flood_max_advert = 8;
   _prefs.interference_threshold = 0; // disabled
   _prefs.cad_enabled = 0;            // hardware CAD before TX (off by default; 'set cad on')
+#ifdef SMART_REPEAT
+  _prefs.cad_enabled = 1;            // Listen-before-Talk ab Werk an
+#endif
   _prefs.loop_detect = LOOP_DETECT_MINIMAL;
 
   // bridge defaults
@@ -1282,6 +1294,9 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       strcpy(reply, "OK - Discover sent");
     }
   } else{
+#ifdef SMART_REPEAT
+    if (smartHandleCommand(command, reply)) return;
+#endif
     _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
   }
 }
@@ -1301,7 +1316,11 @@ void MyMesh::loop() {
     updateFloodAdvertTimer(); // schedule next flood advert
     updateAdvertTimer();      // also schedule local advert (so they don't overlap)
   } else if (next_local_advert && millisHasNowPassed(next_local_advert)) {
-    mesh::Packet *pkt = createSelfAdvert();
+    mesh::Packet *pkt = NULL;
+#ifdef SMART_REPEAT
+    if (_smart.battState() == SmartRepeat::BATT_OK)   // Akku knapp -> eigene Adverts aussetzen
+#endif
+    pkt = createSelfAdvert();
     if (pkt) sendZeroHop(pkt);
 
     updateAdvertTimer(); // schedule next local advert
@@ -1329,7 +1348,78 @@ void MyMesh::loop() {
   uint32_t now = millis();
   uptime_millis += now - last_millis;
   last_millis = now;
+
+#ifdef SMART_REPEAT
+  smartLoop();
+#endif
 }
+
+#ifdef SMART_REPEAT
+void MyMesh::smartCheckEcho(const mesh::Packet* pkt) {
+  if (!pkt->isRouteFlood()) return;   // nur Flood, direkte Pakete nie anfassen
+  uint8_t hash[MAX_HASH_SIZE];
+  bool have_hash = false;
+
+  for (int i = 0; i < _mgr->getOutboundTotal(); i++) {
+    mesh::Packet* q = _mgr->getOutboundByIdx(i);
+    if (q == NULL || !q->isRouteFlood() || q->getPayloadType() != pkt->getPayloadType()) continue;
+    if (q->payload_len != pkt->payload_len) continue;
+    if (!have_hash) { pkt->calculatePacketHash(hash); have_hash = true; }
+    uint8_t qh[MAX_HASH_SIZE];
+    q->calculatePacketHash(qh);
+    if (memcmp(hash, qh, MAX_HASH_SIZE) != 0) continue;
+
+    // gleiches Paket wartet bei uns. Nur Echos von Repeatern derselben oder einer weiteren
+    // Stufe zählen – eine Kopie aus der Stufe davor heißt nicht, dass unser Gebiet versorgt ist.
+    if (pkt->getPathHashCount() >= q->getPathHashCount()) {
+      if (_smart.onEcho(hash, pkt->getSNR())) {
+        _mgr->removeOutboundByIdx(i);
+        _mgr->free(q);
+        MESH_DEBUG_PRINTLN("SmartRepeat: Kopie unterdrueckt (Echo SNR=%d)", (int)pkt->getSNR());
+      }
+    }
+    return;
+  }
+}
+
+void MyMesh::smartLoop() {
+  uint32_t now = millis();
+  if (!_smart.battCheckDue(now)) return;
+  SmartRepeat::BattState st = _smart.onBattery(board.getBattMilliVolts(), board.isExternalPowered());
+  if (st == SmartRepeat::BATT_CRITICAL) {
+    if (dirty_contacts_expiry) { acl.save(_fs); dirty_contacts_expiry = 0; }
+  #if defined(NRF52_POWER_MANAGEMENT) && defined(RAK_4631)
+    board.shutdownLowVoltage();   // SYSTEMOFF, Aufwachen wenn Solar den Akku wieder hochzieht
+  #endif
+  }
+}
+
+bool MyMesh::smartHandleCommand(const char* command, char* reply) {
+  if (strcmp(command, "smart") == 0) {
+    sprintf(reply, "> smart=%s snr=%d count=%d echos=%u unterdrueckt=%u akku=%s",
+            _smart.enabled ? "on" : "off", (int)_smart.strong_snr, (int)_smart.echo_count,
+            (unsigned)_smart.n_echoes, (unsigned)_smart.n_suppressed,
+            _smart.battState() == SmartRepeat::BATT_OK ? "ok" :
+            (_smart.battState() == SmartRepeat::BATT_SAVE ? "sparen" : "kritisch"));
+    return true;
+  }
+  if (strcmp(command, "set smart on") == 0)  { _smart.enabled = true;  strcpy(reply, "OK - smart on");  return true; }
+  if (strcmp(command, "set smart off") == 0) { _smart.enabled = false; strcpy(reply, "OK - smart off (Stock-Verhalten)"); return true; }
+  if (memcmp(command, "set smart.snr ", 14) == 0) {
+    _smart.strong_snr = atof(&command[14]);
+    sprintf(reply, "OK - smart.snr=%d dB", (int)_smart.strong_snr);
+    return true;
+  }
+  if (memcmp(command, "set smart.count ", 16) == 0) {
+    int c = atoi(&command[16]);
+    if (c < 1 || c > 10) { strcpy(reply, "Err - 1..10"); return true; }
+    _smart.echo_count = c;
+    sprintf(reply, "OK - smart.count=%d", c);
+    return true;
+  }
+  return false;
+}
+#endif
 
 // To check if there is pending work
 bool MyMesh::hasPendingWork() const {
