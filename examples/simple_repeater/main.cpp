@@ -35,6 +35,10 @@ static unsigned long userBtnDownAt = 0;
 #define USER_BTN_HOLD_OFF_MILLIS 1500
 #endif
 
+#ifdef FORMAT_FS_ON_BOOT
+#include <flash/flash_nrf5x.h>
+#endif
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -75,7 +79,14 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
   Serial.println("Werksreset: loesche Dateisystem ...");
-  bool ok = InternalFS.format();
+  // 1. Flash-Bereich des Dateisystems Seite fuer Seite roh loeschen (unabhaengig vom Dateiformat)
+  bool ok = true;
+  for (uint32_t addr = 0xED000; addr < 0xED000 + 7 * 4096; addr += 4096) {
+    if (!flash_nrf5x_erase(addr)) ok = false;
+  }
+  flash_nrf5x_flush();
+  // 2. frisch formatieren
+  if (!InternalFS.format()) ok = false;
   Serial.println(ok ? "Werksreset: OK - jetzt normale Firmware flashen" : "Werksreset: FEHLER");
   pinMode(LED_BUILTIN, OUTPUT);
   while (true) {   // LED: schnell = OK, langsam = Fehler
