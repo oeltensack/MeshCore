@@ -37,6 +37,11 @@ public:
     return "Seeed SenseCap Solar";
   }
 
+#ifdef NRF52_POWER_MANAGEMENT
+  // Unterspannung im Betrieb: SYSTEMOFF mit LPCOMP-Wake (Solar laedt nach -> Neustart)
+  void shutdownLowVoltage() { initiateShutdown(SHUTDOWN_REASON_LOW_VOLTAGE); }
+#endif
+
   void powerOff() override {
     digitalWrite(LED_WHITE, LOW);
     digitalWrite(LED_BLUE, LOW);

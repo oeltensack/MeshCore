@@ -1388,7 +1388,7 @@ void MyMesh::smartLoop() {
   SmartRepeat::BattState st = _smart.onBattery(board.getBattMilliVolts(), board.isExternalPowered());
   if (st == SmartRepeat::BATT_CRITICAL) {
     if (dirty_contacts_expiry) { acl.save(_fs); dirty_contacts_expiry = 0; }
-  #if defined(NRF52_POWER_MANAGEMENT) && defined(RAK_4631)
+  #if defined(NRF52_POWER_MANAGEMENT) && defined(BOARD_HAS_LOWV_SHUTDOWN)
     board.shutdownLowVoltage();   // SYSTEMOFF, Aufwachen wenn Solar den Akku wieder hochzieht
   #endif
   }
