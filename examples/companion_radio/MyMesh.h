@@ -68,6 +68,9 @@
 
 #include <helpers/BaseChatMesh.h>
 #include <helpers/TransportKeyStore.h>
+#ifdef MOBILE_STATION
+#include "MobileStation.h"
+#endif
 
 /* -------------------------------------------------------------------------------------- */
 
@@ -288,6 +291,12 @@ private:
 
   #define ADVERT_PATH_TABLE_SIZE   16
   AdvertPath advert_paths[ADVERT_PATH_TABLE_SIZE]; // circular table
+
+#ifdef MOBILE_STATION
+  MobileStation _mobile;
+  void mobileLoop();
+  void sendAutoAdvert(bool flood);
+#endif
 };
 
 extern MyMesh the_mesh;

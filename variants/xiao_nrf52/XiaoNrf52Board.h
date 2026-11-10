@@ -31,6 +31,11 @@ public:
 
   uint16_t getBattMilliVolts() override;
 
+#ifdef NRF52_POWER_MANAGEMENT
+  // Unterspannung im Betrieb: SYSTEMOFF mit LPCOMP-Wake (wacht beim Laden wieder auf)
+  void shutdownLowVoltage() { initiateShutdown(SHUTDOWN_REASON_LOW_VOLTAGE); }
+#endif
+
   const char* getManufacturerName() const override {
     return "Seeed Xiao-nrf52";
   }

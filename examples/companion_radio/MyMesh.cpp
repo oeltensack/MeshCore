@@ -289,6 +289,9 @@ uint8_t MyMesh::getExtraAckTransmitCount() const {
 }
 
 void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
+#ifdef MOBILE_STATION
+  _mobile.onRx(snr, _prefs.sf, millis());
+#endif
   if (_serial->isConnected() && len + 3 <= MAX_FRAME_SIZE) {
     int i = 0;
     out_frame[i++] = PUSH_CODE_LOG_RX_DATA;
@@ -895,7 +898,11 @@ uint32_t MyMesh::calcDirectTimeoutMillisFor(uint32_t pkt_airtime_millis, uint8_t
           (path_hash_count + 1));
 }
 
-void MyMesh::onSendTimeout() {}
+void MyMesh::onSendTimeout() {
+#ifdef MOBILE_STATION
+  _mobile.onSendTimeout(millis());   // naechster Versuch mit voller Leistung
+#endif
+}
 
 MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMeshTables &tables, DataStore& store)
     : BaseChatMesh(radio, *new ArduinoMillis(), rng, rtc, *new StaticPoolPacketManager(16), tables),
@@ -933,6 +940,9 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
 #endif
   //_prefs.rx_delay_base = 10.0f;  enable once new algo fixed
   _prefs.setRepeatEn(false);
+#ifdef MOBILE_STATION
+  _prefs.cad_enabled = 1;   // Listen-before-Talk: weniger Kollisionen beim eigenen Senden
+#endif
 #if defined(USE_SX1262) || defined(USE_SX1268)
 #ifdef SX126X_RX_BOOSTED_GAIN
   _prefs.rx_boosted_gain = SX126X_RX_BOOSTED_GAIN;
@@ -1005,6 +1015,9 @@ void MyMesh::begin() {
   radio_driver.setParams(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
   radio_driver.setTxPower(_prefs.tx_power_dbm);
   radio_driver.setRxBoostedGainMode(_prefs.rx_boosted_gain);
+#ifdef MOBILE_STATION
+  _mobile.begin(_prefs.tx_power_dbm, millis());
+#endif
 
   board.attachDynamicPrefs(_prefs.getCustom());
 
@@ -1273,7 +1286,12 @@ void MyMesh::handleCmdFrame(size_t len) {
     if (lat <= 90 * 1E6 && lat >= -90 * 1E6 && lon <= 180 * 1E6 && lon >= -180 * 1E6) {
       sensors.node_lat = ((double)lat) / 1000000.0;
       sensors.node_lon = ((double)lon) / 1000000.0;
+#ifdef MOBILE_STATION
+      // Handy liefert beim Fahren laufend Positionen -> Flash schonen, Speichern gedrosselt in mobileLoop()
+      _mobile.onPositionUpdate(sensors.node_lat, sensors.node_lon, millis());
+#else
       savePrefs();
+#endif
       writeOKFrame();
     } else {
       writeErrFrame(ERR_CODE_ILLEGAL_ARG); // invalid geo coordinate
@@ -1465,6 +1483,9 @@ void MyMesh::handleCmdFrame(size_t len) {
       _prefs.tx_power_dbm = power;
       savePrefs();
       radio_driver.setTxPower(_prefs.tx_power_dbm);
+#ifdef MOBILE_STATION
+      _mobile.begin(_prefs.tx_power_dbm, millis());   // App-Wert = neues Maximum der Auto-Leistung
+#endif
       writeOKFrame();
     }
   } else if (cmd_frame[0] == CMD_SET_TUNING_PARAMS) {
@@ -2431,7 +2452,74 @@ void MyMesh::loop() {
     saveContacts();
     dirty_contacts_expiry = 0;
   }
+
+#ifdef MOBILE_STATION
+  mobileLoop();
+#endif
 }
+
+#ifdef MOBILE_STATION
+void MyMesh::mobileLoop() {
+  static uint32_t last_tick = 0;
+  uint32_t now = millis();
+  if ((uint32_t)(now - last_tick) < 2000) return;   // reicht alle 2 s, spart Rechenzeit
+  last_tick = now;
+
+  // --- Akku ---
+  if (_mobile.battCheckDue(now)) {
+    MobileStation::BattState prev = _mobile.getBattState();
+    MobileStation::BattState st = _mobile.onBattery(board.getBattMilliVolts(), board.isExternalPowered());
+    if (st != prev) {
+      MESH_DEBUG_PRINTLN("Mobile: Akku-Zustand %d -> %d", (int)prev, (int)st);
+    }
+    if (st == MobileStation::BATT_CRITICAL) {
+      // alles Offene sichern, dann Tiefschlaf (wacht beim Laden wieder auf)
+      savePrefs();
+      if (dirty_contacts_expiry) { saveContacts(); dirty_contacts_expiry = 0; }
+  #if defined(NRF52_POWER_MANAGEMENT) && defined(XIAO_NRF52)
+      board.shutdownLowVoltage();
+  #else
+      board.powerOff();
+  #endif
+      return;
+    }
+  }
+
+  // --- Auto-Sendeleistung (nur im Leerlauf umschalten) ---
+  if (_radio->isInRecvMode() && !_radio->isReceiving() && _mgr->getOutboundTotal() == 0) {
+    int8_t p;
+    if (_mobile.evalTxPower(_prefs.tx_power_dbm, now, p)) {
+      radio_driver.setTxPower(p);
+      MESH_DEBUG_PRINTLN("Mobile: TX-Leistung -> %d dBm", (int)p);
+    }
+  }
+
+  // --- Position gedrosselt speichern ---
+  if (_mobile.shouldPersistPosition(now)) {
+    savePrefs();
+  }
+
+  // --- Positions-Adverts beim Fahren ---
+  MobileStation::AdvertAction a = _mobile.checkAdvert(_prefs.advert_loc_policy != ADVERT_LOC_NONE,
+                                                      _mgr->getOutboundTotal() == 0, now);
+  if (a != MobileStation::ADV_NONE) {
+    sendAutoAdvert(a == MobileStation::ADV_FLOOD);
+  }
+}
+
+void MyMesh::sendAutoAdvert(bool flood) {
+  mesh::Packet* pkt = createSelfAdvert(_prefs.node_name, sensors.node_lat, sensors.node_lon);
+  if (pkt == NULL) return;
+  uint32_t delay_millis = getRNG()->nextInt(0, MOBILE_ADV_JITTER_MS + 1);   // nicht zeitgleich mit anderen
+  if (flood) {
+    TransportKey default_scope;
+    memcpy(&default_scope.key, _prefs.default_scope_key, sizeof(default_scope.key));
+    sendFloodScoped(default_scope, pkt, delay_millis);   // nur in eigener Region (falls gesetzt)
+  } else {
+    sendZeroHop(pkt, delay_millis);
+  }
+}
+#endif
 
 bool MyMesh::advert() {
   mesh::Packet* pkt;
