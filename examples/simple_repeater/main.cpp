@@ -66,10 +66,12 @@ void setup() {
     InternalFS.begin();                     // findet leeren Bereich, formatiert neu
     if (!InternalFS.format()) ok = false;
     Serial.println(ok ? "Werksreset: OK - jetzt normale Firmware flashen" : "Werksreset: FEHLER");
+    bool led = false;
     while (true) {   // schnell = OK, langsam = Fehler
-      digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+      led = !led;   // eigener Zustand: digitalRead() liefert bei Ausgaengen auf nRF52 nichts
+      digitalWrite(LED_BUILTIN, led);
   #ifdef LED_WHITE
-      digitalWrite(LED_WHITE, digitalRead(LED_BUILTIN));
+      digitalWrite(LED_WHITE, led);
   #endif
       delay(ok ? 150 : 1000);
       if (Serial) Serial.println(ok ? "Werksreset: OK" : "Werksreset: FEHLER");
