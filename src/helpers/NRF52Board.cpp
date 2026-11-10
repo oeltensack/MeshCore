@@ -30,11 +30,24 @@ void NRF52Board::begin() {
   // Bluefruit laeuft noch nicht, warten alle Flash-Schreib-/Loeschbefehle ewig auf ein
   // SoC-Event, das niemand verteilt -> Einstellungen speichern friert ein. Daher abschalten;
   // Bluefruit.begin() (OTA, BLE) schaltet sie bei Bedarf sauber wieder ein.
+#ifndef NO_SD_BOOT_GUARD
   {
     uint8_t sd_en = 0;
     sd_softdevice_is_enabled(&sd_en);
-    if (sd_en) sd_softdevice_disable();
+    if (sd_en) {
+      sd_softdevice_disable();
+      // Die SoftDevice hat HFCLK und den POWER-Interrupt verwaltet. Nach dem Abschalten
+      // beides wiederherstellen, sonst bricht USB (Serial) weg.
+      NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
+      NRF_CLOCK->TASKS_HFCLKSTART = 1;
+      for (int i = 0; i < 10000 && !NRF_CLOCK->EVENTS_HFCLKSTARTED; i++) { delayMicroseconds(10); }
+      NVIC_ClearPendingIRQ(POWER_CLOCK_IRQn);
+      NVIC_SetPriority(POWER_CLOCK_IRQn, 7);
+      NVIC_EnableIRQ(POWER_CLOCK_IRQn);
+      NRF_POWER->INTENSET = POWER_INTENSET_USBDETECTED_Msk | POWER_INTENSET_USBREMOVED_Msk | POWER_INTENSET_USBPWRRDY_Msk;
+    }
   }
+#endif
 
   #ifdef USE_CC310_HW_CRYPTO
     // CC310 TRNG is higher quality and environment-independent vs radio RSSI noise.
